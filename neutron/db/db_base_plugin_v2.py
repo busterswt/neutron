@@ -190,7 +190,19 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
             'network',
             query_hook=None,
             filter_hook=None,
-            result_filters=_network_result_filter_hook)
+            result_filters=_network_result_filter_hook,
+            rbac_actions=rbac_db_models.NETWORK_VISIBILITY_RBAC_ACTIONS)
+        # Subnets have no RBAC entries of their own; they inherit the
+        # network's (models_v2.Subnet.rbac_entries). Register the same actions
+        # here, or a read-only network is visible with none of its subnets
+        # and a port's fixed IPs on it cannot be resolved.
+        model_query.register_hook(
+            models_v2.Subnet,
+            'subnet',
+            query_hook=None,
+            filter_hook=None,
+            result_filters=None,
+            rbac_actions=rbac_db_models.NETWORK_VISIBILITY_RBAC_ACTIONS)
         return super().__new__(cls, *args, **kwargs)
 
     @staticmethod
@@ -246,21 +258,23 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
     @db_api.retry_if_session_inactive()
     def _validate_network_rbac_policy_change(self, resource, event, trigger,
                                              context, payload):
-        """Validates network RBAC policy changes.
+        """Validate a change to a network's shared or read-only policy.
 
-        On creation, verify that the creator is an admin or that it owns the
-        network it is sharing.
+        On creation, verify that the creator is an admin or owns the network.
+        Granting read-only access additionally requires an admin or the
+        service role.
 
-        On update and delete, make sure the project losing access does not have
-        resources that depend on that access.
+        On update and delete of a shared policy, make sure the project losing
+        access has no resources that depend on it. A read-only policy anchors
+        nothing, so it is always free to change.
         """
         object_type = payload.metadata.get('object_type')
         policy = (payload.request_body if event == events.BEFORE_CREATE
                   else payload.latest_state)
 
-        if (object_type != 'network' or
-                policy['action'] != rbac_db_models.ACCESS_SHARED):
-            # we only care about shared network policies
+        if (object_type != 'network' or policy['action'] not in
+                rbac_db_models.NETWORK_VISIBILITY_RBAC_ACTIONS):
+            # only policies that grant a project access to a network
             return
         # The object a policy targets cannot be changed so we can look
         # at the original network for the update event as well.
@@ -273,6 +287,20 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
                 msg = _("Only admins can manipulate policies on networks "
                         "they do not own")
                 raise exc.InvalidInput(error_message=msg)
+
+        if policy['action'] == rbac_db_models.ACCESS_READONLY:
+            if (event in (events.BEFORE_CREATE, events.BEFORE_UPDATE) and
+                    not (context.is_admin or context.is_service_role)):
+                # Read-only access exists so an operator can let a project
+                # boot on a port the operator created for it. Creating that
+                # port for another project takes admin or the service role;
+                # granting the visibility that goes with it takes the same.
+                msg = _("Only admins can grant read-only access to a network")
+                raise exc.InvalidInput(error_message=msg)
+            # Nothing can be held *because of* read-only access, so a revoke
+            # has nothing to strand. The in-use checks below are for shared
+            # access only; read-only grants stay revocable by design.
+            return
 
         project_to_check = None
         self_sharing = policy['target_project'] == net['project_id']

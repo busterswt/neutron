@@ -1,0 +1,24 @@
+---
+features:
+  - |
+    Networks support a new RBAC action, ``access_as_readonly``. The target
+    project can see the network and its subnets but cannot use them: it cannot
+    create ports on the network or attach a router interface to its subnets.
+    The network's ``shared`` attribute is unaffected, so the default
+    ``create_port`` policy continues to deny the target project.
+
+    This lets a project boot an instance on a port that an operator created
+    for it on a provider network. Nova resolves the port's network while
+    validating the boot, using the project's own credentials; a network the
+    project cannot see is silently dropped from the request, and the instance
+    boots with no interface. The project must therefore be able to see the
+    network, and the only way to grant that before now, ``access_as_shared``,
+    also let the project create its own ports on the provider network.
+
+    Granting read-only access requires an administrator or the ``service``
+    role -- the same set that may create a port on behalf of another project,
+    so both halves of that workflow are operator actions.
+
+    A read-only policy can always be deleted. Unlike ``access_as_shared``, it
+    is not subject to ``RbacPolicyInUse``, because nothing can be held by the
+    target project because of it.
