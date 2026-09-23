@@ -29,6 +29,13 @@ from neutron._i18n import _
 
 ACCESS_SHARED = 'access_as_shared'
 ACCESS_EXTERNAL = 'access_as_external'
+ACCESS_READONLY = 'access_as_readonly'
+
+# The actions that make a network (and its subnets) visible to a project.
+# ACCESS_SHARED also lets the project use the network: create ports on it,
+# attach router interfaces to its subnets. ACCESS_READONLY grants visibility
+# and nothing else.
+NETWORK_VISIBILITY_RBAC_ACTIONS = {ACCESS_SHARED, ACCESS_READONLY}
 
 
 class InvalidActionForType(n_exc.InvalidInput):
@@ -115,7 +122,7 @@ class NetworkRBAC(RBACColumns, model_base.BASEV2):
 
     @staticmethod
     def get_valid_actions():
-        actions = (ACCESS_SHARED,)
+        actions = (ACCESS_SHARED, ACCESS_READONLY)
         pl = directory.get_plugin()
         if 'external-net' in pl.supported_extension_aliases:
             actions += (ACCESS_EXTERNAL,)

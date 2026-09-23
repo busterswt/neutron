@@ -216,6 +216,93 @@ class NetworkRbacTestcase(test_plugin.NeutronDbPluginV2TestCase):
                               self.plugin.get_rbac_policy,
                               self.context, wild_policy['id'])
 
+    def test_readonly_action_is_valid_for_networks_only(self):
+        self.assertIn(rbac_db_models.ACCESS_READONLY,
+                      rbac_db_models.NetworkRBAC.get_valid_actions())
+        self.assertNotIn(rbac_db_models.ACCESS_READONLY,
+                         rbac_db_models.SecurityGroupRBAC.get_valid_actions())
+        self.assertNotIn(rbac_db_models.ACCESS_READONLY,
+                         rbac_db_models.QosPolicyRBAC.get_valid_actions())
+
+    def test_create_network_rbac_readonly_grants_visibility_not_use(self):
+        target = 'test-project-2'
+        with self.network() as net:
+            net_id = net['network']['id']
+            target_ctx = context.Context('test-user', target)
+            self.assertRaises(n_exc.NetworkNotFound,
+                              self.plugin.get_network, target_ctx, net_id)
+
+            policy = self._make_networkrbac(net, target,
+                                            rbac_db_models.ACCESS_READONLY)
+            self.plugin.create_rbac_policy(self.context, policy)
+
+            seen = self.plugin.get_network(target_ctx, net_id)
+            self.assertEqual(net_id, seen['id'])
+            # Visible, but not shared: 'shared' is computed from
+            # ACCESS_SHARED entries alone, which is what keeps the default
+            # create_port policy ("or rule:shared") from matching.
+            self.assertFalse(seen['shared'])
+
+    def test_create_network_rbac_readonly_requires_admin_or_service(self):
+        """The network owner alone cannot grant read-only access.
+
+        Read-only access pairs with a port an operator created for the
+        target project, which takes admin or the service role; granting the
+        visibility takes the same.
+        """
+        with self.network() as net:
+            owner_ctx = context.Context('test-user',
+                                        net['network']['project_id'])
+            policy = self._make_networkrbac(net, 'test-project-2',
+                                            rbac_db_models.ACCESS_READONLY)
+            self.assertRaises(n_exc.InvalidInput,
+                              self.plugin.create_rbac_policy,
+                              owner_ctx, policy)
+
+    def test_readonly_networkrbac_makes_subnets_visible(self):
+        target = 'test-project-2'
+        with self.network() as net:
+            net_id = net['network']['id']
+            with self.subnet(network=net) as subnet:
+                subnet_id = subnet['subnet']['id']
+                target_ctx = context.Context('test-user', target)
+                self.assertRaises(n_exc.SubnetNotFound,
+                                  self.plugin.get_subnet, target_ctx,
+                                  subnet_id)
+
+                policy = self._make_networkrbac(
+                    net, target, rbac_db_models.ACCESS_READONLY)
+                self.plugin.create_rbac_policy(self.context, policy)
+
+                seen = self.plugin.get_subnet(target_ctx, subnet_id)
+                self.assertEqual(net_id, seen['network_id'])
+
+    def test_delete_readonly_networkrbac_with_port_present(self):
+        """A read-only policy is deletable even with the target's port present.
+
+        The same port would make an access_as_shared policy undeletable
+        (RbacPolicyInUse). Nothing is held because of a read-only grant.
+        """
+        target = 'test-project-2'
+        with self.network() as net:
+            policy = self._make_networkrbac(net, target,
+                                            rbac_db_models.ACCESS_READONLY)
+            netrbac = self.plugin.create_rbac_policy(self.context, policy)
+            test_port = {'port': {'name': 'test-port',
+                                  'network_id': net['network']['id'],
+                                  'mac_address': constants.ATTR_NOT_SPECIFIED,
+                                  'fixed_ips': constants.ATTR_NOT_SPECIFIED,
+                                  'admin_state_up': True,
+                                  'device_id': 'device_id',
+                                  'device_owner': 'device_owner',
+                                  'project_id': target}}
+            self.plugin.create_port(self.context, test_port)
+
+            self.plugin.delete_rbac_policy(self.context, netrbac['id'])
+            self.assertRaises(ext_rbac.RbacPolicyNotFound,
+                              self.plugin.get_rbac_policy,
+                              self.context, netrbac['id'])
+
     def test_delete_networkrbac_self_share(self):
         net_id = 'my-network'
         net_owner = 'my-tenant-id'

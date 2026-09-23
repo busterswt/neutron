@@ -128,6 +128,46 @@ This process can be repeated any number of times to share a network
 with an arbitrary number of projects.
 
 
+Granting read-only access to a network
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``access_as_shared`` grants visibility and use together: the target project
+can see the network and create ports on it. ``access_as_readonly`` grants
+visibility alone.
+
+The typical use is an operator-owned provider network on which the operator
+creates ports for a project. Nova resolves a port's network when it validates
+a boot request, and it does so with the requesting project's credentials. A
+network the project cannot see is dropped from the request without an error:
+the instance boots ``ACTIVE`` with no interface on it and the port is left
+unbound. A boot that names the network directly fails with ``NetworkNotFound``
+instead. So the project must be able to see the network -- but it should not
+be able to create its own ports there.
+
+.. code-block:: console
+
+   $ openstack network rbac create --target-project \
+     a4f1cf0f0b7d4b49bbc8b13e1bd4a8bc --action access_as_readonly \
+     --type network 5ec2eb0c-a72b-4c86-9c1e-aa8d3eab2e9d
+
+The target project can now show and list the network and its subnets. It
+cannot create a port on the network or attach a router interface to its
+subnets: the network's ``shared`` attribute is unaffected, so the default
+``create_port`` policy does not admit the project. Ports for that project are
+created by the network's owner or by an administrator.
+
+A read-only policy can always be deleted. Unlike ``access_as_shared``, it is
+not subject to ``RbacPolicyInUse``, because nothing can be held by the target
+project because of it.
+
+Granting read-only access requires an administrator or a holder of the
+``service`` role; owning the network is not sufficient. This matches the gate
+on creating a port on behalf of another project -- only an administrator or
+the ``service`` role may set a ``project_id`` other than their own -- so both
+halves of the workflow above are operator actions. Deleting a read-only policy
+follows the usual rule: an administrator or the network's owner.
+
+
 Sharing a QoS policy with specific projects
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
